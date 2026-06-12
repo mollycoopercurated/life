@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Instagram Downloader</title>
+  <style>
+    :root {
+      --bg: #0f1115;
+      --card: #1a1d24;
+      --border: #2a2e38;
+      --text: #e7e9ee;
+      --muted: #9aa0ac;
+      --accent: #c13584;
+      --accent2: #f56040;
+      --ok: #2ecc71;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+    }
+    header {
+      padding: 28px 20px 18px;
+      text-align: center;
+      border-bottom: 1px solid var(--border);
+    }
+    h1 {
+      margin: 0 0 4px;
+      font-size: 24px;
+      background: linear-gradient(90deg, var(--accent), var(--accent2));
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+    }
+    header p { margin: 0; color: var(--muted); font-size: 14px; }
+    .wrap { max-width: 1100px; margin: 0 auto; padding: 20px; }
+    .searchbar { display: flex; gap: 10px; flex-wrap: wrap; }
+    input[type="text"] {
+      flex: 1 1 280px;
+      padding: 12px 14px;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      color: var(--text);
+      font-size: 15px;
+    }
+    input[type="text"]:focus { outline: none; border-color: var(--accent); }
+    select {
+      padding: 12px;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      color: var(--text);
+    }
+    button {
+      padding: 12px 18px;
+      border: none;
+      border-radius: 10px;
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+      background: linear-gradient(90deg, var(--accent), var(--accent2));
+      color: white;
+    }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    button.secondary {
+      background: var(--card);
+      border: 1px solid var(--border);
+      color: var(--text);
+    }
+    .toolbar {
+      display: none;
+      align-items: center;
+      gap: 12px;
+      margin: 20px 0 12px;
+      flex-wrap: wrap;
+    }
+    .toolbar.show { display: flex; }
+    .toolbar .count { color: var(--muted); font-size: 14px; margin-right: auto; }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+      gap: 14px;
+    }
+    .card {
+      position: relative;
+      background: var(--card);
+      border: 2px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+      cursor: pointer;
+      transition: border-color 0.15s, transform 0.1s;
+    }
+    .card:hover { transform: translateY(-2px); }
+    .card.selected { border-color: var(--accent); }
+    .thumb {
+      width: 100%;
+      aspect-ratio: 1 / 1;
+      object-fit: cover;
+      display: block;
+      background: #000;
+    }
+    .badge {
+      position: absolute;
+      top: 8px;
+      right: 8px;
+      background: rgba(0,0,0,0.65);
+      border-radius: 6px;
+      padding: 2px 7px;
+      font-size: 12px;
+    }
+    .check {
+      position: absolute;
+      top: 8px;
+      left: 8px;
+      width: 24px; height: 24px;
+      border-radius: 50%;
+      background: rgba(0,0,0,0.5);
+      border: 2px solid white;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 14px; color: white;
+    }
+    .card.selected .check { background: var(--accent); border-color: var(--accent); }
+    .meta { padding: 8px 10px; font-size: 12px; color: var(--muted); }
+    .meta .cap {
+      color: var(--text);
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+      min-height: 2.6em;
+    }
+    .status { margin: 16px 0; padding: 12px 14px; border-radius: 10px; font-size: 14px; display: none; }
+    .status.show { display: block; }
+    .status.error { background: rgba(245,96,64,0.12); border: 1px solid var(--accent2); }
+    .status.ok { background: rgba(46,204,113,0.12); border: 1px solid var(--ok); }
+    .status.info { background: var(--card); border: 1px solid var(--border); color: var(--muted); }
+    .spinner {
+      display: inline-block; width: 16px; height: 16px;
+      border: 2px solid var(--muted); border-top-color: transparent;
+      border-radius: 50%; animation: spin 0.7s linear infinite; vertical-align: middle;
+      margin-right: 8px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    footer { text-align: center; color: var(--muted); font-size: 12px; padding: 24px; }
+    a { color: var(--accent); }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Instagram Downloader</h1>
+    <p>Paste a profile URL or username, pick the posts you want, and download them.</p>
+  </header>
+
+  <div class="wrap">
+    <div class="status show info" id="loginBanner" style="display:none"></div>
+
+    <form class="searchbar" id="searchForm">
+      <input type="text" id="profileInput" placeholder="e.g. nasa  or  https://instagram.com/nasa" autocomplete="off" />
+      <select id="countSelect" title="How many recent posts to load">
+        <option value="12">12 posts</option>
+        <option value="24">24 posts</option>
+        <option value="36">36 posts</option>
+        <option value="50">50 posts</option>
+      </select>
+      <button type="submit" id="loadBtn">Load posts</button>
+    </form>
+
+    <div class="status" id="status"></div>
+
+    <div class="toolbar" id="toolbar">
+      <span class="count" id="profileMeta"></span>
+      <button type="button" class="secondary" id="selectAllBtn">Select all</button>
+      <button type="button" class="secondary" id="clearBtn">Clear</button>
+      <button type="button" id="downloadBtn">Download selected (0)</button>
+    </div>
+
+    <div class="grid" id="grid"></div>
+  </div>
+
+  <footer>
+    Downloads are saved to the <code>downloads/&lt;username&gt;</code> folder on the machine running this app.<br/>
+    Public profiles only · For personal use · Respect Instagram's terms &amp; copyright.
+  </footer>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const grid = $("grid");
+    const statusEl = $("status");
+    const toolbar = $("toolbar");
+    const downloadBtn = $("downloadBtn");
+
+    let currentProfile = "";
+    const selected = new Set();
+
+    // Tell the user up front if no login session is configured — Instagram
+    // blocks most anonymous access, so fetches will likely fail without it.
+    fetch("/api/status").then((r) => r.json()).then((s) => {
+      const banner = $("loginBanner");
+      if (s.logged_in) {
+        banner.className = "status show ok";
+        banner.innerHTML = `Logged in as <b>@${s.username}</b>.`;
+      } else {
+        banner.className = "status show error";
+        banner.innerHTML =
+          "<b>No login configured.</b> Instagram blocks most logged-out requests, so loading posts will likely fail. " +
+          "Set <code>IG_USERNAME</code> (and once, <code>IG_PASSWORD</code>) before starting the app — see the README.";
+      }
+      banner.style.display = "block";
+    }).catch(() => {});
+
+    function setStatus(msg, kind = "info", spinning = false) {
+      statusEl.className = "status show " + kind;
+      statusEl.innerHTML = (spinning ? '<span class="spinner"></span>' : "") + msg;
+    }
+    function hideStatus() { statusEl.className = "status"; }
+
+    function updateDownloadBtn() {
+      downloadBtn.textContent = `Download selected (${selected.size})`;
+      downloadBtn.disabled = selected.size === 0;
+    }
+
+    function thumbUrl(u) { return "/api/thumb?u=" + encodeURIComponent(u); }
+
+    function renderPosts(data) {
+      grid.innerHTML = "";
+      selected.clear();
+      updateDownloadBtn();
+
+      $("profileMeta").textContent =
+        `@${data.username}${data.full_name ? " · " + data.full_name : ""} · ${data.post_count} posts · showing ${data.posts.length}`;
+      toolbar.classList.add("show");
+
+      data.posts.forEach((p) => {
+        const card = document.createElement("div");
+        card.className = "card";
+        card.dataset.shortcode = p.shortcode;
+
+        let badge = "";
+        if (p.is_carousel) badge = `▦ ${p.media_count}`;
+        else if (p.is_video) badge = "▶ video";
+
+        card.innerHTML = `
+          <div class="check">✓</div>
+          ${badge ? `<div class="badge">${badge}</div>` : ""}
+          <img class="thumb" loading="lazy" src="${thumbUrl(p.thumb)}" alt="" />
+          <div class="meta">
+            <div class="cap">${p.caption ? escapeHtml(p.caption) : "<em>No caption</em>"}</div>
+            <div>${p.date} · ♥ ${p.likes.toLocaleString()}</div>
+          </div>`;
+
+        card.addEventListener("click", () => {
+          if (selected.has(p.shortcode)) { selected.delete(p.shortcode); card.classList.remove("selected"); }
+          else { selected.add(p.shortcode); card.classList.add("selected"); }
+          updateDownloadBtn();
+        });
+
+        grid.appendChild(card);
+      });
+    }
+
+    function escapeHtml(s) {
+      return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+    }
+
+    $("searchForm").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const profile = $("profileInput").value.trim();
+      if (!profile) return;
+      const count = $("countSelect").value;
+
+      toolbar.classList.remove("show");
+      grid.innerHTML = "";
+      $("loadBtn").disabled = true;
+      setStatus("Fetching recent posts… this can take a few seconds.", "info", true);
+
+      try {
+        const res = await fetch(`/api/posts?profile=${encodeURIComponent(profile)}&count=${count}`);
+        const data = await res.json();
+        if (!res.ok) { setStatus(data.error || "Failed to load posts.", "error"); return; }
+        currentProfile = data.username;
+        if (!data.posts.length) { setStatus("This profile has no public posts to show.", "info"); return; }
+        hideStatus();
+        renderPosts(data);
+      } catch (err) {
+        setStatus("Network error: " + err.message, "error");
+      } finally {
+        $("loadBtn").disabled = false;
+      }
+    });
+
+    $("selectAllBtn").addEventListener("click", () => {
+      document.querySelectorAll(".card").forEach((c) => {
+        selected.add(c.dataset.shortcode); c.classList.add("selected");
+      });
+      updateDownloadBtn();
+    });
+
+    $("clearBtn").addEventListener("click", () => {
+      selected.clear();
+      document.querySelectorAll(".card").forEach((c) => c.classList.remove("selected"));
+      updateDownloadBtn();
+    });
+
+    downloadBtn.addEventListener("click", async () => {
+      if (!selected.size) return;
+      downloadBtn.disabled = true;
+      setStatus(`Downloading ${selected.size} post(s)… large carousels/videos take longer.`, "info", true);
+
+      try {
+        const res = await fetch("/api/download", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ profile: currentProfile, shortcodes: [...selected] }),
+        });
+        const data = await res.json();
+        if (!res.ok) { setStatus(data.error || "Download failed.", "error"); return; }
+
+        const failed = data.results.filter((r) => !r.ok);
+        let msg = `Downloaded ${data.downloaded} of ${data.total} post(s) into <code>${data.folder}/</code>.`;
+        if (failed.length) {
+          msg += "<br/>Failed: " + failed.map((f) => `${f.shortcode} (${escapeHtml(f.error || "")})`).join(", ");
+          setStatus(msg, "error");
+        } else {
+          setStatus(msg, "ok");
+        }
+      } catch (err) {
+        setStatus("Network error: " + err.message, "error");
+      } finally {
+        updateDownloadBtn();
+      }
+    });
+  </script>
+</body>
+</html>
