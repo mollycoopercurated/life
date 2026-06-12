@@ -5,9 +5,10 @@ Paste an Instagram profile URL (or username), browse the most recent posts,
 tick the ones you want, and download their images/videos to ./downloads.
 
 Public profiles only. Instagram blocks most logged-out access, so log in once by
-importing a browser session (see the README). Posts are read from Instagram's
-`web_profile_info` endpoint, which returns a profile's most recent posts without
-the GraphQL queries that Instagram has been rejecting.
+importing a browser session (see the README). Profile info comes from the
+`web_profile_info` endpoint and the actual posts come from the user "feed"
+endpoint — both use the logged-in session and avoid the GraphQL queries that
+Instagram has been rejecting.
 """
 
 import os
@@ -44,7 +45,7 @@ IG_USERNAME = os.environ.get("IG_USERNAME", "").strip()
 IG_PASSWORD = os.environ.get("IG_PASSWORD", "")
 _logged_in_as = None  # username we currently have a session for, if any
 
-# The public web app id Instagram's own site sends; required by web_profile_info.
+# The public web app id Instagram's own site sends; required by these endpoints.
 IG_APP_ID = "936619743392459"
 
 # A browser-ish UA helps avoid being blocked.
@@ -115,44 +116,24 @@ class ProfileError(Exception):
         self.status = status
 
 
-def _extract_media(node) -> list:
-    """Return [(media_url, extension), ...] for a post node (handles carousels)."""
-    items = []
-    children = node.get("edge_sidecar_to_children")
-    if children and children.get("edges"):
-        for child in children["edges"]:
-            cn = child["node"]
-            if cn.get("is_video") and cn.get("video_url"):
-                items.append((cn["video_url"], "mp4"))
-            elif cn.get("display_url"):
-                items.append((cn["display_url"], "jpg"))
-    else:
-        if node.get("is_video") and node.get("video_url"):
-            items.append((node["video_url"], "mp4"))
-        elif node.get("display_url"):
-            items.append((node["display_url"], "jpg"))
-    return items
-
-
-def fetch_profile(username: str) -> dict:
-    """Fetch a profile and its recent posts via Instagram's web_profile_info API.
-
-    Uses the logged-in session's cookies. Returns the raw ``user`` dict. Raises
-    ProfileError with a friendly message and HTTP status on failure.
-    """
-    sess = _loader.context._session
-    headers = {
+def _headers(username: str) -> dict:
+    return {
         "User-Agent": BROWSER_UA,
         "X-IG-App-ID": IG_APP_ID,
         "X-Requested-With": "XMLHttpRequest",
         "Referer": f"https://www.instagram.com/{username}/",
         "Accept": "*/*",
     }
+
+
+def fetch_profile(username: str) -> dict:
+    """Fetch a profile's basic info (id, privacy, name, count) via web_profile_info."""
+    sess = _loader.context._session
     try:
         resp = sess.get(
             "https://www.instagram.com/api/v1/users/web_profile_info/",
             params={"username": username},
-            headers=headers,
+            headers=_headers(username),
             timeout=20,
         )
     except requests.RequestException as exc:
@@ -167,13 +148,9 @@ def fetch_profile(username: str) -> dict:
             401,
         )
     if resp.status_code == 429:
-        raise ProfileError(
-            "Instagram is rate-limiting you. Wait a few minutes and try again.", 429
-        )
+        raise ProfileError("Instagram is rate-limiting you. Wait a few minutes and try again.", 429)
     if resp.status_code != 200:
-        raise ProfileError(
-            f"Instagram returned an unexpected status ({resp.status_code}).", 502
-        )
+        raise ProfileError(f"Instagram returned an unexpected status ({resp.status_code}).", 502)
     try:
         user = resp.json()["data"]["user"]
     except (ValueError, KeyError, TypeError):
@@ -183,49 +160,117 @@ def fetch_profile(username: str) -> dict:
     return user
 
 
-def load_posts(username: str, count: int) -> dict:
-    """Return profile metadata + a list of recent posts, caching media for download."""
-    user = fetch_profile(username)
-    timeline = user.get("edge_owner_to_timeline_media", {}) or {}
-    edges = timeline.get("edges", []) or []
+def fetch_feed(user_id: str, username: str, count: int) -> list:
+    """Fetch up to ``count`` recent posts from the user feed endpoint (paginated)."""
+    sess = _loader.context._session
+    collected = []
+    max_id = None
+    while len(collected) < count:
+        params = {"count": min(33, count - len(collected))}
+        if max_id:
+            params["max_id"] = max_id
+        try:
+            resp = sess.get(
+                f"https://www.instagram.com/api/v1/feed/user/{user_id}/",
+                params=params,
+                headers=_headers(username),
+                timeout=20,
+            )
+        except requests.RequestException as exc:
+            raise ProfileError(f"Could not reach Instagram: {exc}", 502)
+        if resp.status_code == 429:
+            raise ProfileError("Instagram is rate-limiting you. Wait a few minutes and try again.", 429)
+        if resp.status_code != 200:
+            raise ProfileError(f"Instagram returned an unexpected status ({resp.status_code}).", 502)
+        try:
+            data = resp.json()
+        except ValueError:
+            raise ProfileError("Instagram returned an unexpected response.", 502)
+        batch = data.get("items") or []
+        collected.extend(batch)
+        if not batch or not data.get("more_available") or not data.get("next_max_id"):
+            break
+        max_id = data["next_max_id"]
+        time.sleep(0.4)
+    return collected[:count]
 
+
+def _best_image(node) -> str:
+    cands = (node.get("image_versions2") or {}).get("candidates") or []
+    return cands[0]["url"] if cands else ""
+
+
+def _best_video(node) -> str:
+    versions = node.get("video_versions") or []
+    return versions[0]["url"] if versions else ""
+
+
+def _media_items(item) -> list:
+    """Return [(url, ext), ...] for a feed item, handling carousels and videos."""
+    nodes = item.get("carousel_media") if item.get("media_type") == 8 else [item]
+    out = []
+    for node in nodes or []:
+        if node.get("media_type") == 2:
+            url = _best_video(node)
+            if url:
+                out.append((url, "mp4"))
+                continue
+        url = _best_image(node)
+        if url:
+            out.append((url, "jpg"))
+    return out
+
+
+def _thumb(item) -> str:
+    thumb = _best_image(item)
+    if not thumb and item.get("carousel_media"):
+        thumb = _best_image(item["carousel_media"][0])
+    return thumb
+
+
+def load_posts(username: str, count: int) -> dict:
+    """Return profile metadata + recent posts, caching media URLs for download."""
+    user = fetch_profile(username)
+    result = {
+        "username": username,
+        "full_name": user.get("full_name") or "",
+        "post_count": (user.get("edge_owner_to_timeline_media") or {}).get("count", 0),
+        "is_private": bool(user.get("is_private")),
+        "posts": [],
+    }
+    if result["is_private"]:
+        return result
+
+    items = fetch_feed(str(user["id"]), username, count)
     posts = []
-    for edge in edges[:count]:
-        node = edge.get("node", {})
-        shortcode = node.get("shortcode")
+    for item in items:
+        shortcode = item.get("code")
         if not shortcode:
             continue
-        items = _extract_media(node)
-        _media_cache[shortcode] = {"username": username, "items": items}
+        media = _media_items(item)
+        _media_cache[shortcode] = {"username": username, "items": media}
 
-        cap_edges = (node.get("edge_media_to_caption") or {}).get("edges") or []
-        caption = cap_edges[0]["node"]["text"] if cap_edges else ""
-        likes = (node.get("edge_liked_by") or node.get("edge_media_preview_like") or {}).get("count", 0)
-        ts = node.get("taken_at_timestamp")
+        caption = (item.get("caption") or {}).get("text", "") or ""
+        ts = item.get("taken_at")
         date = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d") if ts else ""
-        is_carousel = bool((node.get("edge_sidecar_to_children") or {}).get("edges"))
+        media_type = item.get("media_type")
 
         posts.append(
             {
                 "shortcode": shortcode,
-                "thumb": node.get("display_url", ""),
-                "is_video": bool(node.get("is_video")),
-                "is_carousel": is_carousel,
-                "media_count": max(1, len(items)),
+                "thumb": _thumb(item),
+                "is_video": media_type == 2,
+                "is_carousel": media_type == 8,
+                "media_count": item.get("carousel_media_count") or max(1, len(media)),
                 "caption": caption[:140],
                 "date": date,
-                "likes": likes,
+                "likes": item.get("like_count", 0) or 0,
                 "url": f"https://www.instagram.com/p/{shortcode}/",
             }
         )
 
-    return {
-        "username": username,
-        "full_name": user.get("full_name") or "",
-        "post_count": timeline.get("count", len(posts)),
-        "is_private": bool(user.get("is_private")),
-        "posts": posts,
-    }
+    result["posts"] = posts
+    return result
 
 
 def parse_username(value: str) -> str:
